@@ -37,6 +37,7 @@ o o o o o fila 6
 int rmin = 50, rmax = 300;
 unsigned int semilla;
 int max_movs = 200;
+int prob_falla = 0; // por mil
 int puma_ini[2] = {2, 2};
 int perros_ini[12][2] = {
 {5, 0}, {5, 1}, {5, 2}, {5, 3}, {5, 4},
@@ -233,10 +234,20 @@ p->resultado = resultado;
 sem_post(&p->fin);
 }
 
-// todos toman el mutex de la partida con esta funcion
+// todos toman el mutex de la partida con esta funcion.
+// el mutex es robusto: si una ficha se muere teniendolo, el siguiente que
+// lo pide recibe EOWNERDEAD en vez de quedarse bloqueado para siempre
 void tomar(Partida *p, int quien)
 {
-pthread_mutex_lock(&p->mutex);
+if (pthread_mutex_lock(&p->mutex) == EOWNERDEAD) {
+pthread_mutex_consistent(&p->mutex);
+printf("[mesa %d] se detecto que la ficha %d se desconecto\n", p->mesa + 1, p->dueno);
+escribir_log("[mesa %d] la ficha %d murio con el mutex tomado\n", p->mesa + 1, p->dueno);
+if (!p->terminado) {
+p->abandono = 1;
+terminar(p, p->dueno == 0 ? GANAN_PERROS : GANA_PUMA);
+}
+}
 p->dueno = quien;
 }
 
@@ -325,6 +336,13 @@ pthread_mutex_unlock(&p->mutex);
 break;
 }
 
+// para probar las desconexiones: el hilo se muere de golpe con el mutex
+// tomado y sin avisarle a nadie
+if (prob_falla > 0 && (int)(rand_r(&fi->seed) % 1000) < prob_falla) {
+printf("[mesa %d] (prueba) se cae la ficha %d\n", p->mesa + 1, fi->id);
+pthread_exit(NULL);
+}
+
 mover(p, fi, of, oc, df, dc);
 pthread_mutex_unlock(&p->mutex);
 }
@@ -336,7 +354,11 @@ void *juez(void *arg)
 Partida *p = arg;
 
 // 1. primitivas y tablero
-pthread_mutex_init(&p->mutex, NULL);
+pthread_mutexattr_t attr;
+pthread_mutexattr_init(&attr);
+pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
+pthread_mutex_init(&p->mutex, &attr);
+pthread_mutexattr_destroy(&attr);
 sem_init(&p->fin, 0, 0);
 
 for (int i = 0; i < FILAS; i++)
@@ -431,6 +453,7 @@ if (strcmp(nombre, "retardo_min") == 0) rmin = a;
 else if (strcmp(nombre, "retardo_max") == 0) rmax = a;
 else if (strcmp(nombre, "semilla") == 0) semilla = a;
 else if (strcmp(nombre, "max_movimientos") == 0) max_movs = a;
+else if (strcmp(nombre, "prob_falla") == 0) prob_falla = a;
 else if (strcmp(nombre, "puma") == 0 && n == 3) {
 puma_ini[0] = a;
 puma_ini[1] = b;

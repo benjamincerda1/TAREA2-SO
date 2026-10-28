@@ -11,6 +11,10 @@ semilla 1234
 # limite de movimientos por partida (si se llega, es empate)
 max_movimientos 200
 
+# probabilidad (por mil) de que una ficha falle, 0 = nunca
+# poner 5 o algo asi para probar los abandonos
+prob_falla 0
+
 # posicion inicial: fila columna
 # filas 0 y 1 son el trono (fila 0: col 0,2,4 / fila 1: col 1,2,3)
 # filas 2 a 6 son la cuadricula de 5x5
