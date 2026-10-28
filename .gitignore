@@ -53,3 +53,9 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Torneo de Komikan (ejecutable y salidas de prueba)
+torneo
+torneo.log
+salida_*.txt
+config_lento.txt
