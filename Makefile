@@ -9,4 +9,7 @@ torneo: torneo.c
 clean:
 	rm -f torneo torneo.log salida_*.txt
 
-.PHONY: all clean
+.PHONY: all clean test
+
+test: torneo
+	sh pruebas.sh
