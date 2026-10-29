@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <time.h>
+#include <signal.h>
 #include <pthread.h>
 #include <semaphore.h>
 
@@ -96,12 +97,16 @@ sem_t avisos;  // cada vez que llega un jugador (o hay ctrl+c) se hace post
 
 sem_t mesas_libres;
 int *mesa_ocupada;
+Partida **en_mesa;  // para poder cancelar las partidas con ctrl+c
 int *juez_creado;
 pthread_t *jueces;
 pthread_mutex_t mmesas = PTHREAD_MUTEX_INITIALIZER;
 
 FILE *flog = NULL;
 pthread_mutex_t mlog = PTHREAD_MUTEX_INITIALIZER;
+
+volatile sig_atomic_t parar = 0;
+sem_t cierre;  // con ctrl+c se despierta a los jugadores que todavia no llegan
 
 
 void dormir(int ms)
@@ -122,6 +127,17 @@ void escribir_log(const char *formato, ...)
     fflush(flog);
     pthread_mutex_unlock(&mlog);
     va_end(args);
+}
+
+void ctrl_c(int s)
+{
+    (void)s;
+    parar = 1;
+    // sem_post se puede usar dentro de un handler, asi despierto al servidor
+    sem_post(&avisos);
+    sem_post(&mesas_libres);
+    for (int i = 0; i < N; i++)
+        sem_post(&cierre);
 }
 
 // sem_wait se puede cortar por la señal (EINTR), en ese caso reintento.
@@ -415,6 +431,11 @@ void *juez(void *arg)
     p->abandono = 0;
     p->dueno = -1;
 
+    // recien ahora el servidor puede ver la partida (para cancelarla con ctrl+c)
+    pthread_mutex_lock(&mmesas);
+    en_mesa[p->mesa] = p;
+    pthread_mutex_unlock(&mmesas);
+
     printf("[mesa %d] empieza la partida %d: jugador %d (puma) vs jugador %d (perros)\n", p->mesa + 1, p->num, p->jpuma, p->jperros);
     escribir_log("[mesa %d] ======= empieza partida %d =======\n", p->mesa + 1, p->num);
     pthread_mutex_lock(&mlog);  // para que no se mezcle con el tablero de otra mesa
@@ -438,6 +459,13 @@ void *juez(void *arg)
             break;
         }
         creadas++;
+    }
+
+    // si el ctrl+c llego justo mientras se armaba la partida
+    if (parar) {
+        tomar(p, -1);
+        terminar(p, CANCELADA);
+        pthread_mutex_unlock(&p->mutex);
     }
 
     // 3. esperar (sin gastar cpu) a que alguien termine la partida
@@ -465,6 +493,7 @@ void *juez(void *arg)
 
     int m = p->mesa;
     pthread_mutex_lock(&mmesas);
+    en_mesa[m] = NULL;
     mesa_ocupada[m] = 0;
     pthread_mutex_unlock(&mmesas);
 
@@ -482,14 +511,27 @@ void *jugador(void *arg)
     Jugador *j = arg;
     unsigned int s = semilla + 999 + j->id;
 
-    // los jugadores llegan en distintos momentos (0 a 2 s)
-    dormir(rand_r(&s) % 2000);
+    // los jugadores llegan en distintos momentos (0 a 2 s). en vez de dormir
+    // espero en "cierre" con timeout: si hay ctrl+c llego altiro y el servidor
+    // me rechaza, asi el cierre no tiene que esperar a que despierte
+    int ms = rand_r(&s) % 2000;
+    struct timespec t;
+    clock_gettime(CLOCK_REALTIME, &t);
+    t.tv_sec += ms / 1000;
+    t.tv_nsec += (ms % 1000) * 1000000L;
+    if (t.tv_nsec >= 1000000000L) {
+        t.tv_sec++;
+        t.tv_nsec -= 1000000000L;
+    }
+    while (sem_timedwait(&cierre, &t) != 0 && errno == EINTR)
+        ;
 
+    // siempre me anoto en la cola, si el torneo esta cerrado el servidor me rechaza
     pthread_mutex_lock(&mcola);
     cola[fin] = j->id;
     fin++;
     llegaron++;
-    printf("[jugador %d] llego, esperando rival\n", j->id);
+    if (!parar) printf("[jugador %d] llego, esperando rival\n", j->id);
     pthread_mutex_unlock(&mcola);
     sem_post(&avisos);
 
@@ -505,6 +547,20 @@ void *jugador(void *arg)
                j->mesa + 1, gane ? "GANE" : "perdi", j->abandono ? " (por abandono)" : "");
     }
     return NULL;
+}
+
+// la llama el servidor despues del ctrl+c
+void cancelar_partidas(void)
+{
+    pthread_mutex_lock(&mmesas);
+    for (int i = 0; i < M; i++) {
+        if (en_mesa[i] != NULL) {
+            tomar(en_mesa[i], -1);
+            terminar(en_mesa[i], CANCELADA);
+            pthread_mutex_unlock(&en_mesa[i]->mutex);
+        }
+    }
+    pthread_mutex_unlock(&mmesas);
 }
 
 int mesas_en_uso(void)
@@ -635,15 +691,16 @@ int main(int argc, char *argv[])
     jug = malloc(N * sizeof(Jugador));
     cola = malloc(N * sizeof(int));
     mesa_ocupada = calloc(M, sizeof(int));
+    en_mesa = calloc(M, sizeof(Partida *));
     juez_creado = calloc(M, sizeof(int));
     jueces = malloc(M * sizeof(pthread_t));
-    if (!jug || !cola || !mesa_ocupada || !juez_creado || !jueces) {
+    if (!jug || !cola || !mesa_ocupada || !en_mesa || !juez_creado || !jueces) {
         printf("error: no hay memoria\n");
-        free(jug); free(cola); free(mesa_ocupada); free(juez_creado); free(jueces);
+        free(jug); free(cola); free(mesa_ocupada); free(en_mesa); free(juez_creado); free(jueces);
         return 1;
     }
 
-    if (sem_init(&mesas_libres, 0, M) != 0 || sem_init(&avisos, 0, 0) != 0) {
+    if (sem_init(&mesas_libres, 0, M) != 0 || sem_init(&avisos, 0, 0) != 0 || sem_init(&cierre, 0, 0) != 0) {
         perror("sem_init");
         return 1;
     }
@@ -654,6 +711,7 @@ int main(int argc, char *argv[])
     printf("=== Torneo de Komikan ===\n");
     printf("%d jugadores, %d mesas, retardo %d-%d ms, semilla %u\n\n", N, M, rmin, rmax, semilla);
 
+    signal(SIGINT, ctrl_c);
 
     for (int i = 0; i < N; i++) {
         jug[i].id = i;
@@ -673,13 +731,26 @@ int main(int argc, char *argv[])
         }
     }
 
-    int partidas = 0;
+    int partidas = 0, cancelado = 0;
     while (N > 0) {
-        esperar(&avisos);  // dormido hasta que llegue alguien o se desocupe una mesa
+        esperar(&avisos);  // dormido hasta que llegue alguien o haya ctrl+c
+
+        if (parar && !cancelado) {
+            printf("\n[servidor] se apreto ctrl+c, no se aceptan mas jugadores\n");
+            cancelar_partidas();
+            cancelado = 1;
+        }
 
         int a = -1, b = -1, salir = 0;
         pthread_mutex_lock(&mcola);
-        if (fin - ini >= 2) {
+        if (parar) {
+            // rechazo a todos los que estan esperando o que van llegando
+            while (ini < fin) {
+                printf("[servidor] jugador %d rechazado, el torneo esta cerrado\n", cola[ini]);
+                sem_post(&jug[cola[ini]].listo);
+                ini++;
+            }
+        } else if (fin - ini >= 2) {
             a = cola[ini];
             b = cola[ini + 1];
             ini += 2;
@@ -697,7 +768,10 @@ int main(int argc, char *argv[])
 
             // si las M mesas estan ocupadas se queda bloqueado aqui
             esperar(&mesas_libres);
-            if (nueva_partida(a, b, partidas + 1)) {
+            if (parar) {
+                sem_post(&jug[a].listo);
+                sem_post(&jug[b].listo);
+            } else if (nueva_partida(a, b, partidas + 1)) {
                 partidas++;
             } else {
                 sem_post(&jug[a].listo);
@@ -709,10 +783,16 @@ int main(int argc, char *argv[])
         if (salir) break;
     }
 
-    // ya no quedan jugadores por emparejar, espero a que terminen las partidas
-    // (cada juez hace post en avisos al salir)
-    while (mesas_en_uso() > 0)
+    // ya no quedan jugadores por emparejar, pero sigo atento al ctrl+c
+    // hasta que terminen todas las partidas (cada juez hace post en avisos al salir)
+    while (mesas_en_uso() > 0) {
         esperar(&avisos);
+        if (parar && !cancelado) {
+            printf("\n[servidor] se apreto ctrl+c, cancelando las partidas que quedan\n");
+            cancelar_partidas();
+            cancelado = 1;
+        }
+    }
 
     for (int i = 0; i < M; i++)
         if (juez_creado[i])
@@ -720,21 +800,22 @@ int main(int argc, char *argv[])
     for (int i = 0; i < N; i++)
         pthread_join(jug[i].hilo, NULL);
 
-
     for (int i = 0; i < N; i++)
         sem_destroy(&jug[i].listo);
     sem_destroy(&mesas_libres);
     sem_destroy(&avisos);
+    sem_destroy(&cierre);
     pthread_mutex_destroy(&mcola);
     pthread_mutex_destroy(&mmesas);
     pthread_mutex_destroy(&mlog);
     free(jug);
     free(cola);
     free(mesa_ocupada);
+    free(en_mesa);
     free(juez_creado);
     free(jueces);
     if (flog != NULL) fclose(flog);
 
-    printf("\nfin del torneo, se jugaron %d partidas\n", partidas);
+    printf("\nfin del torneo, se jugaron %d partidas%s\n", partidas, parar ? " (cerrado con ctrl+c)" : "");
     return 0;
 }
