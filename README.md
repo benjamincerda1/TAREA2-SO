@@ -2,6 +2,8 @@
 
 Tarea 2 - Sistemas Operativos. Hecho en C con pthreads (mutex y semaforos POSIX).
 
+Integrantes: Ailyn Machuca y Benjamin Cerda
+
 ## Compilar
 
 ```
@@ -29,20 +31,29 @@ Ejemplos:
 
 En consola salen los eventos importantes (llegadas, emparejamientos, capturas, fin de cada partida).
 El tablero completo despues de cada movimiento queda en `torneo.log`.
+Al final se imprime el maximo de mesas que jugaron a la vez, para verificar que nunca se pasa de M.
+
+Si `N` o `M` no son enteros positivos, o la config tiene errores (perros fuera del tablero,
+menos de 12 perros, archivo que no existe), el programa avisa por stderr y sale con codigo 1.
 
 ## Pruebas
 
 ```
 make test
 ```
-Corre `pruebas.sh`, que prueba: torneo normal, numero impar de jugadores, caidas de fichas
-(con `config_fallas.txt`), Ctrl+C mientras llegan jugadores, Ctrl+C cuando solo quedan partidas
-jugandose y valgrind (si esta instalado). Si algo se cuelga, el script lo mata y lo marca como MAL.
+Corre `pruebas.sh`, que prueba: torneo normal, numero impar de jugadores, caidas de fichas con y
+sin el mutex tomado (con `config_fallas.txt`, compara caidas simuladas con detectadas), Ctrl+C
+mientras llegan jugadores, Ctrl+C cuando solo quedan partidas jugandose, que nunca haya mas de M
+mesas a la vez, que los tableros no salgan cortados en consola con muchas mesas, argumentos y
+configs malas, y valgrind normal y con Ctrl+C (si esta instalado). Si algo se cuelga, el script lo
+mata y lo marca como MAL. Sale con codigo 0 solo si todo esta ok.
 
 ## Probar a mano los casos especiales
 
-- **Fallos / abandono:** en `config.txt` poner `prob_falla 5`. Alguna ficha se muere de golpe con el mutex
-  tomado, el siguiente hilo lo detecta (mutex robusto) y el otro jugador gana por abandono.
+- **Fallos / abandono:** en `config.txt` poner `prob_falla 5`. Alguna ficha se muere de golpe y el juez
+  declara ganador por abandono al otro jugador. Con `modo_falla 0` muere con el mutex tomado (se detecta
+  por el mutex robusto), con `modo_falla 1` lo suelta antes de morir (el juez la detecta porque deja de
+  dar latido) y con `modo_falla 2` es al azar.
 - **Ctrl+C:** correr por ejemplo `./torneo 20 2` y apretar Ctrl+C. Se cancelan las partidas, los que llegan despues son rechazados y se libera todo.
 - **Memory leaks:** `valgrind --leak-check=full ./torneo 6 2 config.txt`
 
