@@ -59,3 +59,7 @@ torneo
 torneo.log
 salida_*.txt
 config_lento.txt
+config_rapida.txt
+config_mala.txt
+config_pocos.txt
+config_estres.txt
