@@ -7,7 +7,7 @@ torneo: torneo.c
 	$(CC) $(CFLAGS) torneo.c -o torneo
 
 clean:
-	rm -f torneo torneo.log salida_*.txt
+	rm -f torneo torneo.log salida_*.txt config_rapida.txt config_lento.txt config_estres.txt config_mala.txt config_pocos.txt
 
 .PHONY: all clean test
 
